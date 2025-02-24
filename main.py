@@ -1,18 +1,51 @@
-import os
-
 import requests
 import random
 import pyperclip as pc
-
+import os
+import tempfile
+import threading
+import time
+import simpleaudio as sa
+from gtts import gTTS
+from pydub import AudioSegment
+from tkinter import ttk
 import database.database as db
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+from dotenv import load_dotenv
+
+load_dotenv()
 
 base_url = "https://api.metisai.ir/api/v1/chat"
 api_key = os.environ.get("METIS_API_KEY")
 bot_api = os.environ.get("METIS_BOT_API")
+
 headers = {
     "Authorization": f"Bearer {api_key}",
     "Content-Type": "application/json"
 }
+
+def get_chat_sessions_for_bot(bot_id, page=0, size=10):
+    """
+    Get a list of chat sessions for a bot.
+    """
+    url = f"{base_url}/session?botId={bot_id}&page={page}&size={size}"
+    response = requests.get(url, headers=headers)
+    return response.json()
+
+def send_message(session_id, content, message_type="USER"):
+    """
+    Send a message in a chat session.
+    """
+    url = f"{base_url}/session/{session_id}/message"
+    data = {
+        "message": {
+            "content": content,
+            "type": message_type
+        }
+    }
+    response = requests.post(url, headers=headers, json=data)
+    return response.json()
 
 def create_chat_session(bot_id, user=None, initial_messages=None):
     """
@@ -25,6 +58,7 @@ def create_chat_session(bot_id, user=None, initial_messages=None):
         "initialMessages": initial_messages or []
     }
     response = requests.post(url, headers=headers, json=data)
+    print(response)
     return response.json()
 
 
@@ -38,6 +72,11 @@ def get_passage(session,category):
     else:
         targets = words
     message = f"write a passage using the following words: {', '.join([word[0] for word in targets])}"
+    print(message)
+    resp = send_message(session, message)
+    print(resp.get('content'))
+    return resp.get('content') , targets
+
 
 def add_category(category):
     db.insert_category(category)
@@ -68,229 +107,252 @@ def get_word_by_category(category):
 
 
 
-from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical, Center
-from textual.screen import Screen,ModalScreen
-from textual.widgets import Button, Label, Select,Input , ListView,ListItem
 
 
-class AddWords(ModalScreen[str]):
-    """A modal popup window with a dropdown and OK/Cancel buttons."""
+class AddWordsDialog(simpledialog.Dialog):
+    def body(self, master):
+        frame = ttk.Frame(master, padding=10)
+        frame.grid(sticky="ew")
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        ttk.Label(frame, text="Select Category:", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5, pady=5)
+        self.category_var = tk.StringVar()
+        self.dropdown = ttk.Combobox(frame, textvariable=self.category_var, state="readonly", width=25)
+        self.dropdown['values'] = get_all_categories()
+        self.dropdown.grid(row=0, column=1, padx=5, pady=5)
 
-    def compose(self) -> ComposeResult:
-        """Compose the popup content."""
-        categories = get_all_categories()
-        with Container(id="popup-container"):
-            with Vertical(id="popup-content"):
-                yield Label("Select an item:", id="popup-label1")
-                yield Select(
-                    options=[(cat, cat) for cat in categories],
-                    id="dropdown",
-                    prompt="Select an option",
-                )
-                yield Label("Enter a word:", id="popup-label")
-                yield Input(placeholder="word", id="text_input5")
-                with Center():
-                    yield Button("OK", id="btn-ok", variant="primary")
-                    yield Button("Cancel", id="btn-cancel", variant="error")
+        ttk.Label(frame, text="Enter Word:", font=("Arial", 10, "bold")).grid(row=1, column=0, padx=5, pady=5)
+        self.word_entry = ttk.Entry(frame, width=28)
+        self.word_entry.grid(row=1, column=1, padx=5, pady=5)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
-        if event.button.id == "btn-ok":
-            # Get the selected value from the dropdown
-            dropdown = self.query_one("#dropdown", Select)
-            selected_value = dropdown.value
-            text_input = self.query_one("#text_input5", Input).value
-            if selected_value and text_input and text_input != "":
-                add_word(text_input, selected_value)
-                self.dismiss(selected_value)
-            else:
-                self.notify("Please select an item first!", title="Error", severity="error")
-        elif event.button.id == "btn-cancel":
-            # Dismiss the popup without returning a value
-            self.dismiss(None)
+        return self.word_entry
 
-class WordScene(ModalScreen[str]):
-    """A modal popup window with a dropdown and OK/Cancel buttons."""
+    def apply(self):
+        selected_value = self.category_var.get()
+        text_input = self.word_entry.get().strip()
+        if selected_value and text_input:
+            add_word(text_input, selected_value)
+        else:
+            messagebox.showerror("Error", "Please select a category and enter a word")
 
-    def __init__(self, feedback):
-        super().__init__()
-        self.feedback = feedback
 
-    def compose(self) -> ComposeResult:
-        """Compose the popup content."""
-        categories = get_all_categories()
-        with Container(id="popup-container"):
-            with Vertical(id="popup-content"):
-                yield Label("Select an item:", id="popup-label")
-                yield Select(
-                    options=[(cat, cat) for cat in categories],
-                    id="dropdown",
-                    prompt="Select an option",
-                )
-                with Center():
-                    yield Button("OK", id="btn-ok", variant="primary")
-                    yield Button("Cancel", id="btn-cancel", variant="error")
+class WordSceneDialog(simpledialog.Dialog):
+    def body(self, master):
+        frame = ttk.Frame(master, padding=10)
+        frame.grid(sticky="ew")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
-        if event.button.id == "btn-ok":
-            # Get the selected value from the dropdown
-            dropdown = self.query_one("#dropdown", Select)
-            selected_value = dropdown.value
-            if selected_value:
-                # Dismiss the popup and return the selected value
-                self.dismiss(selected_value)
-                self.feedback(selected_value)
-            else:
-                self.notify("Please select an item first!", title="Error", severity="error")
-        elif event.button.id == "btn-cancel":
-            # Dismiss the popup without returning a value
-            self.dismiss(None)
+        ttk.Label(frame, text="Select Category:", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5, pady=5)
+        self.category_var = tk.StringVar()
+        self.dropdown = ttk.Combobox(frame, textvariable=self.category_var, state="readonly", width=25)
+        self.dropdown['values'] = get_all_categories()
+        self.dropdown.grid(row=0, column=1, padx=5, pady=5)
 
-class ShowWords(ModalScreen[str]):
-    def __init__(self, category: str):
-        super().__init__()
+        return self.dropdown
+
+    def apply(self):
+        selected_value = self.category_var.get()
+        if selected_value:
+            ShowWordsDialog(self.parent, selected_value)
+        else:
+            messagebox.showerror("Error", "Please select a category")
+
+
+class WordSceneDialog2(simpledialog.Dialog):
+    def body(self, master):
+        frame = ttk.Frame(master, padding=10)
+        frame.grid(sticky="ew")
+
+        ttk.Label(frame, text="Select Category:", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5, pady=5)
+        self.category_var = tk.StringVar()
+        self.dropdown = ttk.Combobox(frame, textvariable=self.category_var, state="readonly", width=25)
+        self.dropdown['values'] = get_all_categories()
+        self.dropdown.grid(row=0, column=1, padx=5, pady=5)
+
+        return self.dropdown
+
+    def apply(self):
+        selected_value = self.category_var.get()
+        if selected_value:
+            res = get_passage(section, selected_value)
+            passage, targets = res
+            GetPassageDialog(self, targets, passage)
+        else:
+            messagebox.showerror("Error", "Please select a category")
+
+
+class ShowWordsDialog(simpledialog.Dialog):
+    def __init__(self, parent, category):
         self.category = category
-        self.words = get_word_by_category(category)  # Ensure this function exists
+        super().__init__(parent, title=f"Words in {category}")
 
-    def compose(self) -> ComposeResult:
-        yield Container(
-            Vertical(
-                Label(f"Words in category {self.category}", id="popup-label"),
-                ListView(
-                    *[ListItem(Label(word)) for word in self.words],  # Wrap word in Label
-                    id="list_view"
-                ),
-                Button("Back", id="back_button"),
-                id="popup-content",
-            ),
-            id="popup-container"
-        )
+    def body(self, master):
+        frame = ttk.Frame(master, padding=10)
+        frame.pack(fill="both", expand=True)
 
-    def on_button_pressed(self, event) -> None:
-        if event.button.id == "back_button":
-            self.dismiss()
+        ttk.Label(frame, text=f"Words in category: {self.category}", font=("Arial", 12, "bold")).pack(pady=5)
+        self.listbox = tk.Listbox(frame, height=8, width=30)
+        self.listbox.pack(pady=5)
 
-class AddCategory(ModalScreen[str]):
-    def __init__(self, callback: callable):
+        words = get_word_by_category(self.category)
+        for word in words:
+            self.listbox.insert(tk.END, word)
+
+        ttk.Button(frame, text="Close", command=self.destroy).pack(pady=5)
+
+
+class AddCategoryDialog(simpledialog.Dialog):
+    def body(self, master):
+        frame = ttk.Frame(master, padding=10)
+        frame.grid(sticky="ew")
+
+        ttk.Label(frame, text="Enter Category:", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5, pady=5)
+        self.entry = ttk.Entry(frame, width=28)
+        self.entry.grid(row=0, column=1, padx=5, pady=5)
+
+        return self.entry
+
+    def apply(self):
+        category = self.entry.get().strip()
+        if category and category not in get_all_categories():
+            add_category(category)
+        else:
+            messagebox.showerror("Error", "Invalid category or already exists")
+
+
+
+
+
+class GetPassageDialog(simpledialog.Dialog):
+    def __init__(self, parent, targets, passage):
+        self.passage = passage
+        self.targets = targets
+        super().__init__(parent)
+
+    def body(self, master):
+        frame = ttk.Frame(master, padding=10)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Passage", font=("Arial", 12, "bold")).pack(pady=5)
+        ttk.Label(frame, text=self.passage, wraplength=300, justify="center").pack(pady=5)
+
+        # Label to display the selected word
+        self.display_label = ttk.Label(frame, text="", font=("Arial", 12, "bold"), foreground="blue")
+        self.display_label.pack(pady=5)
+
+        # Button to listen to passage
+        ttk.Button(frame, text="🔊 Listen", command=self.speak_passage).pack(pady=5)
+
+        # Button to show the selected word
+        ttk.Button(frame, text="Show Word", command=self.show_selected_word).pack(pady=5)
+
+    def speak_passage(self):
+        def play_audio():
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_mp3, \
+                        tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
+                    tts = gTTS(self.passage)
+                    tts.save(temp_mp3.name)
+
+                    # Ensure ffmpeg works correctly
+                    audio = AudioSegment.from_file(temp_mp3.name, format="mp3")
+                    audio.export(temp_wav.name, format="wav")
+
+                    wave_obj = sa.WaveObject.from_wave_file(temp_wav.name)
+                    play_obj = wave_obj.play()
+
+                    # Wait for playback in a safe way
+                    threading.Thread(target=self.delayed_cleanup, args=(play_obj, temp_mp3.name, temp_wav.name),
+                                     daemon=True).start()
+
+            except Exception as e:
+                print(f"Error in audio playback: {e}")
+
+        threading.Thread(target=play_audio, daemon=True).start()
+
+    def delayed_cleanup(self, play_obj, temp_mp3, temp_wav):
+        """Wait for playback to fully finish before deleting temp files."""
+        play_obj.wait_done()  # This waits safely
+        time.sleep(0.5)  # Small delay to ensure the file is fully released
+
+        try:
+            os.remove(temp_mp3)
+            os.remove(temp_wav)
+            print("Temporary files deleted safely.")
+        except Exception as e:
+            print(f"Error deleting files: {e}")
+
+    def show_selected_word(self):
+        edited = [x[0] for x in self.targets]
+        self.display_label.config(text=f"Selected: {edited}")
+
+
+class GetWordClipBoard(simpledialog.Dialog):
+    def body(self, master):
+        frame = ttk.Frame(master,padding=10)
+        frame.grid(sticky="ew")
+        group_name_tb = ttk.Label(frame, text="Enter Category:", font=("Arial", 10, "bold"))
+        group_name_tb.grid(row=0, column=0, padx=5, pady=5)
+        self.category_var = tk.StringVar()
+        self.dropdown = ttk.Combobox(frame, textvariable=self.category_var, state="readonly", width=25)
+        self.dropdown['values'] = get_all_categories()
+        self.dropdown.grid(row=0, column=1, padx=5, pady=5)
+        return self.dropdown
+
+    def apply(self):
+        selected_value = self.category_var.get()
+        if selected_value:
+            add_word_from_clipboard(selected_value)
+        else:
+            messagebox.showerror("Error", "Please select a category")
+
+
+
+class MainApplication(tk.Tk):
+    def __init__(self):
         super().__init__()
-        self.callback = callback  # Callback function to send feedback
+        self.title("Main Scene")
+        self.geometry("350x450")
+        self.configure(bg="#f0f0f0")
 
-    def compose(self) -> ComposeResult:
-        """Compose the popup scene content."""
-        with Container(id="popup-container-category"):
-            with Vertical(id="popup-content-category"):
-                yield Label("Enter a value:", id="popup-label")
-                yield Input(placeholder="Type something...", id="text_input")
-                with Center():
-                    yield Button("OK", id="btn-ok", variant="primary")
-                    yield Button("Cancel", id="btn-cancel", variant="error")
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
-        if event.button.id == "btn-ok":
-            text_input = self.query_one("#text_input", Input)
-            entered_value = text_input.value.strip()
-            if entered_value and entered_value != "" and entered_value not in get_all_categories():
-                add_category(entered_value)
-                self.callback(entered_value)
-            else:
-                self.notify("Category is not added", title="Error", severity="error")
-            self.app.pop_screen()  # Close the popup
-        elif event.button.id == "btn-cancel":
-            self.app.pop_screen()  # Close the popup
+        ttk.Label(frame, text="Welcome!", font=("Arial", 14, "bold")).pack(pady=10)
 
-class MainScene(Screen):
-    def compose(self) -> ComposeResult:
-        """Create UI components."""
-        yield Container(
-            Vertical(
-                Button("Add Category", id="add_category"),
-                Button("Show words", id="show_words"),
-                Button("Add word", id="add_word"),
-                Button("Add word from clipboard", id="add_word_from_clipboard"),
-                Button("Get Passage", id="get_passage"),
-                Button("Quit", id="btn_quit"),
-                Button("Delete all", id="delete_all"),
-                Label("#HELLO", id="digits"),
-                id="button-column"
-            ),
-            id="centered-container"
-        )
+        button_style = {"padding": 5, "width": 20,"cursor" : "hand2"}
 
-    def on_mount(self) -> None:
-        """Bind buttons to event handlers."""
-        self.app.bind("q", "quit")
+        ttk.Button(frame, text="Add Category", command=self.add_category, **button_style).pack(pady=5)
+        ttk.Button(frame, text="Show Words", command=self.show_words, **button_style).pack(pady=5)
+        ttk.Button(frame, text="Add Word", command=self.add_word, **button_style).pack(pady=5)
+        ttk.Button(frame, text="Get Passage", command=self.get_passage, **button_style).pack(pady=5)
+        ttk.Button(frame, text="Quit", command=self.quit, **button_style).pack(pady=5)
+        ttk.Button(frame, text="Remove All", command=self.remove_everything, **button_style).pack(pady=5)
+        ttk.Button(frame, text="Get Word from Clipboard", command=self.get_word_clipboard, **button_style).pack(pady=5)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
-        if event.button.id == "btn_quit":
-            self.app.exit()
-        elif event.button.id == "show_words":
-            self.app.push_screen(WordScene(self.handle_feedback_1))
-        elif event.button.id == "add_category":
-            self.app.push_screen(AddCategory(self.handle_feedback_2))
-        elif event.button.id == "delete_all":
-            res = remove_all()
-            self.notify(f"result {res}", title="Feedback", severity="information")
-        elif event.button.id == "add_word":
-            self.app.push_screen(AddWords(self.handle_feedback_3))
+    def add_category(self):
+        AddCategoryDialog(self)
 
-    def handle_feedback_1(self, value: str) -> None:
-        """Handle feedback from the popup."""
-        self.mount(ShowWords(value))
+    def show_words(self):
+        WordSceneDialog(self)
 
-    def handle_feedback_2(self,value:str) -> None:
-        """Handle """
-        self.notify(f"category {value} added" , title="Feedback" , severity="information")
+    def add_word(self):
+        AddWordsDialog(self)
 
-    def handle_feedback_3(self,value:str) -> None:
-        self.notify(f"word {value} added" , title="Feedback" , severity="information")
+    def get_passage(self):
+        WordSceneDialog2(self)
 
+    def get_word_clipboard(self):
+        GetWordClipBoard(self)
 
-class PassageScene(ModalScreen[str]):
-    def __init__(self,passage):
-        super().__init__()
-
-class MyApp(App):
-    CSS = """
-        #centered-container {
-            align: center middle;
-        }
-
-        #button-column {
-            align: center middle;
-        }
-
-        #popup-content{
-            align: center middle;
-        }
-        
-        #popup-container{
-            align: center middle;
-        }
-
-        #dropdown {
-            width: 100%;
-            align-horizontal: center;
-        }
-
-        Button {
-            width: 30%;
-            margin: 1;
-        }
-    """
-
-    def on_mount(self) -> None:
-        """Register the main scene."""
-        self.push_screen(MainScene())  # Start with the main scene
+    def remove_everything(self):
+        remove_all()
 
 
 if __name__ == "__main__":
     db.create_table_if_not_exists()
-    app = MyApp()
-    app.run()
+    sections = get_chat_sessions_for_bot(bot_api)
+
+    section = sections[0].get('id') if sections else create_chat_session(bot_api)
+
+    app = MainApplication()
+    app.mainloop()
+
